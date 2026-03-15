@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时监控与目标检测仪表板</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>实时监控与目标检测</h1>
+            <div class="status-indicator">
+                <div id="systemStatus" class="status-dot"></div>
+                <span id="systemStatusText">系统正在运行</span>
+            </div>
+        </div>
+
+        <div class="main-layout-single-column">
+            
+            <div class="video-stream">
+                <h3>当前设备: <span id="currentDeviceId">请选择设备</span></h3>
+                <div class="video-container">
+                    <img id="currentImage" src="" alt="实时视频流">
+                    <div id="imagePlaceholder" class="image-placeholder">等待图像数据...</div>
+                </div>
+            </div>
+
+            <div class="detection-panel">
+                <h3>实时检测结果 (<span id="detectionCount">0</span>)</h3>
+                <div id="detectionResults" class="detection-list">
+                    </div>
+            </div>
+            
+            <div class="device-selector-panel">
+                <h3>选择设备</h3>
+                <div id="deviceList" class="device-list">
+                    </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span>总设备数: <span id="totalDevices">0</span> | 在线: <span id="onlineDevices">0</span> | 离线: <span id="offlineDevices">0</span></span>
+            <span>最后更新时间: <span id="lastUpdateTime">--:--:--</span></span>
+        </div>
+
+    </div>
+
+    <script>
+        const DEVICE_LIST = ["device001", "device002", "device003"];
+        let currentDeviceId = DEVICE_LIST[0];
+        let statusInterval;
+        let imageInterval;
+        // let historyLoaded = false; // 历史记录功能已移除
+
+        // YOLOv8 (COCO 80类) 标准类别映射表 (需与 Python 端保持一致)
+        const YOLO_COCO_CLASSES_JS = {
+            0: '人', 1: '自行车', 2: '汽车', 3: '摩托车', 4: '飞机', 5: '公交车', 6: '火车', 7: '卡车', 8: '船', 9: '交通信号灯',
+            10: '灭火栓', 11: '停车标志', 12: '停车计时器', 13: '长凳', 14: '鸟', 15: '猫', 16: '狗', 17: '马', 18: '羊', 19: '牛',
+            20: '大象', 21: '熊', 22: '斑马', 23: '长颈鹿', 24: '背包', 25: '伞', 26: '手提包', 27: '领带', 28: '手提箱', 29: '飞盘',
+            30: '滑雪板', 31: '运动雪橇', 32: '运动球', 33: '风筝', 34: '棒球棒', 35: '棒球手套', 36: '滑板', 37: '冲浪板', 38: '网球拍', 39: '瓶子',
+            40: '酒杯', 41: '杯子', 42: '叉子', 43: '刀', 44: '勺子', 45: '碗', 46: '香蕉', 47: '苹果', 48: '三明治', 49: '橙子',
+            50: '西兰花', 51: '胡萝卜', 52: '热狗', 53: '披萨', 54: '甜甜圈', 55: '蛋糕', 56: '椅子', 57: '沙发', 58: '盆栽', 59: '床',
+            60: '餐桌', 61: '马桶', 62: '电视', 63: '笔记本电脑', 64: '鼠标', 65: '遥控器', 66: '键盘', 67: '手机', 68: '微波炉', 69: '烤箱',
+            70: '烤面包机', 71: '水槽', 72: '冰箱', 73: '书', 74: '时钟', 75: '花瓶', 76: '剪刀', 77: '泰迪熊', 78: '吹风机', 79: '牙刷'
+        };
+
+        // 初始化函数
+        function init() {
+            initDeviceList();
+
+            // 启动定时器
+            statusInterval = setInterval(updateStatus, 3000);
+            imageInterval = setInterval(() => updateImage(currentDeviceId), 500);
+
+            // 移除历史记录按钮事件和弹窗初始化
+        }
+
+        // 设备列表初始化
+        function initDeviceList() {
+            const deviceList = document.getElementById('deviceList');
+            deviceList.innerHTML = '';
+            // 调整 device-list 布局，使其在单栏中更合理（例如 grid 布局）
+            deviceList.style.display = 'grid';
+            deviceList.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
+            deviceList.style.gap = '10px';
+
+            DEVICE_LIST.forEach(id => {
+                const button = document.createElement('button');
+                button.textContent = id;
+                button.setAttribute('data-device-id', id);
+                button.onclick = () => selectDevice(id);
+                deviceList.appendChild(button);
+            });
+            selectDevice(currentDeviceId);
+        }
+
+        // 选择设备
+        function selectDevice(deviceId) {
+            currentDeviceId = deviceId;
+            document.getElementById('currentDeviceId').textContent = deviceId;
+
+            document.querySelectorAll('.device-list button').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.getAttribute('data-device-id') === deviceId) {
+                    btn.classList.add('active');
+                }
+            });
+
+            updateImage(deviceId);
+        }
+
+        // 刷新状态
+        async function updateStatus() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+
+                document.getElementById('totalDevices').textContent = stats.total_devices;
+                document.getElementById('onlineDevices').textContent = stats.online_devices;
+                document.getElementById('offlineDevices').textContent = stats.offline_devices;
+
+                const dot = document.getElementById('systemStatus');
+                dot.classList.toggle('online', stats.online_devices > 0);
+                document.getElementById('systemStatusText').textContent =
+                    stats.online_devices > 0 ? '系统正在运行' : '部分设备离线';
+
+                // 更新每个设备按钮的状态显示
+                DEVICE_LIST.forEach(async id => {
+                    const res = await fetch(`/api/latest/${id}`);
+                    const data = await res.json();
+                    const button = document.querySelector(`[data-device-id="${id}"]`);
+                    if (button) {
+                         const statusText = data.is_online ? '在线' : '离线';
+                         button.innerHTML = `${id} <span class="device-status ${data.is_online ? 'online' : 'offline'}">${statusText}</span>`;
+                    }
+                });
+
+                updateLastUpdateTime();
+
+            } catch (error) {
+                console.error("获取系统状态失败:", error);
+                document.getElementById('systemStatus').classList.remove('online');
+                document.getElementById('systemStatusText').textContent = 'API连接失败';
+            }
+        }
+
+        // 刷新图像和检测结果
+        async function updateImage(deviceId) {
+            try {
+                const response = await fetch(`/api/latest/${deviceId}`);
+                const data = await response.json();
+                const imageElement = document.getElementById('currentImage');
+                const placeholder = document.getElementById('imagePlaceholder');
+
+                if (data.is_online && data.detection_data.image_b64) {
+                    imageElement.src = `data:image/jpeg;base64,${data.detection_data.image_b64}`;
+                    imageElement.style.display = 'block';
+                    placeholder.style.display = 'none';
+                    updateDetectionResults(data.detection_data.detection);
+                } else {
+                    imageElement.src = '';
+                    imageElement.style.display = 'none';
+                    placeholder.textContent = `设备 ${deviceId} ${data.status === 'offline' ? '已离线' : '等待图像数据'}`;
+                    placeholder.style.display = 'block';
+                    updateDetectionResults([]);
+                }
+            } catch (error) {
+                console.error(`获取设备 ${deviceId} 数据失败:`, error);
+                document.getElementById('imagePlaceholder').textContent = '数据加载错误';
+            }
+        }
+
+        // 更新检测结果列表
+        function updateDetectionResults(results) {
+            const detectionResults = document.getElementById('detectionResults');
+            const detectionCount = document.getElementById('detectionCount');
+            detectionResults.innerHTML = '';
+            detectionCount.textContent = results.length;
+
+            if (results.length === 0) {
+                detectionResults.innerHTML = '<div style="color:#aaa; text-align:center; padding: 15px;">暂未检测到目标</div>';
+                return;
+            }
+
+            results.sort((a, b) => b.confidence - a.confidence);
+
+            results.slice(0, 10).forEach(result => {
+                const item = document.createElement('div');
+                item.className = 'detection-item';
+
+                let classLabel = YOLO_COCO_CLASSES_JS[result.class] || `类别 ${result.class}`;
+
+                item.innerHTML = `
+                    <span class="detection-class">${classLabel}</span>
+                    <span class="detection-confidence">${(result.confidence * 100).toFixed(1)}%</span>
+                    <div>位置: [${result.bbox.map(v => v.toFixed(1)).join(', ')}]</div>
+                `;
+
+                detectionResults.appendChild(item);
+            });
+        }
+
+        function updateLastUpdateTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('zh-CN');
+            document.getElementById('lastUpdateTime').textContent = timeString;
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
